@@ -2,6 +2,7 @@ import numpy as np
 import random
 import numba
 from numba import njit
+from numba.experimental import jitclass
 from timeit import default_timer
 import psutil
 import multiprocessing as mp
@@ -9,27 +10,43 @@ import time
 
 
 numba_fastmath = True
-# caching will raise a pickling error when executed in the competition env
-numba_cache = False
+numba_cache = False # some pickling error in the kaggle env
+CFG_ROWS = 6
+CFG_COLS = 7
+CFG_INAROW = 4
+CFG_TIMEOUT = 2.0
+CFG_C = 2.0
+
 
 @njit(fastmath=numba_fastmath, cache=numba_cache)
-def drop_piece_on_grid(col, piece, grid):
-    """Get the board after dropping mark in col on the supplied grid"""
+def drop_piece_cp(board, col, piece):
+    """Copy and return the board after dropping mark in col"""
+    next_board = board.copy()
     # get the last nonzero idx
-    row = (grid[:, col]==0).nonzero()[0][-1]
-    grid[row, col] = piece
-    return grid
+    row = (next_board[:, col]==0).nonzero()[0][-1]
+    next_board[row, col] = piece
+    return next_board
+
+@njit(fastmath=numba_fastmath, cache=numba_cache)
+def drop_piece_nocp(board, col, piece):
+    """Return the board after dropping mark in col"""
+    # get the last nonzero idx
+    row = (board[:, col]==0).nonzero()[0][-1]
+    board[row, col] = piece
+    return board
 
 
 @njit(fastmath=numba_fastmath, cache=numba_cache)
-def get_move_winner(board, inarow, player, col):
-    """Call get_winner on board with player's piece dropped in col"""
-    next_board = drop_piece_on_grid(col, player, board.copy())
-    return get_winner(next_board, inarow)
+def get_move_winner(board, player, col):
+    """
+        call get_winner on board with player's piece dropped in col
+    """
+    next_board = drop_piece_cp(board, col, player)
+    return get_winner(next_board)
 
 
 @njit(fastmath=numba_fastmath, cache=numba_cache)
-def get_winner(board, inarow):
+def get_winner(board):
     """
         Returns the winner {None, 0, 1, 2} on the matrix style grid
             None: game isn't finished
@@ -38,36 +55,36 @@ def get_winner(board, inarow):
             2: player 2
     """
     # horizontal
-    rows, cols = board.shape
-    for row in range(rows):
-        for col in range(cols-(inarow-1)):
-            window = board[row, col:col+inarow]
+    for row in range(CFG_ROWS):
+        for col in range(CFG_COLS-(CFG_INAROW-1)):
+            window = board[row, col:col+CFG_INAROW]
             if (window == 1).all():
                 return 1
             elif (window == 2).all():
                 return 2
     # vertical
-    for row in range(rows-(inarow-1)):
-        for col in range(cols):
-            window = board[row:row+inarow, col]
+    for row in range(CFG_ROWS-(CFG_INAROW-1)):
+        for col in range(CFG_COLS):
+            window = board[row:row+CFG_INAROW, col]
             if (window == 1).all():
                 return 1
             elif (window == 2).all():
                 return 2
-    window = np.zeros(inarow, dtype=np.int8)
+    # preallocate window for diagonals
+    window = np.zeros(CFG_INAROW, dtype=np.int8)
     # positive diagonal
-    for row in np.arange(rows-(inarow-1)):
-        for col in np.arange(cols-(inarow-1)):
-            for i in range(inarow):
+    for row in np.arange(CFG_ROWS-(CFG_INAROW-1)):
+        for col in np.arange(CFG_COLS-(CFG_INAROW-1)):
+            for i in range(CFG_INAROW):
                 window[i] = board[row+i, col+i]
             if (window == 1).all():
                 return 1
             elif (window == 2).all():
                 return 2
     # negative diagonal
-    for row in np.arange(inarow-1, rows):
-        for col in np.arange(cols-(inarow-1)):
-            for i in range(inarow):
+    for row in np.arange(CFG_INAROW-1, CFG_ROWS):
+        for col in np.arange(CFG_COLS-(CFG_INAROW-1)):
+            for i in range(CFG_INAROW):
                 window[i] = board[row-i, col+i]
             if (window == 1).all():
                 return 1
@@ -84,7 +101,7 @@ def get_winner(board, inarow):
 @njit(fastmath=numba_fastmath, cache=numba_cache)
 def get_valid_moves(board):
     """Get valid moves on self.board"""
-    return (board[0]==0).nonzero()[0]
+    return (board[0]==0).nonzero()[0].astype(np.int8)
 
 
 @njit(fastmath=numba_fastmath, cache=numba_cache)
@@ -94,12 +111,12 @@ def get_light_move(board):
 
 
 @njit(fastmath=numba_fastmath, cache=numba_cache)
-def get_heavy_move(board, cols, inarow, player):
+def get_heavy_move(board, player):
     """Prioritize winning, then blocking a opponent's win, finally choose a random move"""
     valid_moves = get_valid_moves(board)
-    winners = np.zeros(cols, dtype=np.int8)
+    winners = np.zeros(CFG_COLS, dtype=np.int8)
     for col in valid_moves:
-        winner = get_move_winner(board, inarow, player, col)
+        winner = get_move_winner(board, CFG_INAROW, player, col)
         if winner == player:
             return col
         winners[col] = winner
@@ -111,45 +128,36 @@ def get_heavy_move(board, cols, inarow, player):
     
     
 @njit(fastmath=numba_fastmath, cache=numba_cache)
-def drop_piece(board, col, piece):
-    """Get the board after dropping mark in col"""
-    next_board = board.copy()
-    # get the last nonzero idx
-    row = (next_board[:, col]==0).nonzero()[0][-1]
-    next_board[row, col] = piece
-    return next_board
-
-
-@njit(fastmath=numba_fastmath, cache=numba_cache)
-def check_game_over(board, rows, cols, inarow, player):
+def check_game_over(board, player):
     """Returns true if there is a winning configuration on the board of if there are no valid moves"""
     if get_valid_moves(board).shape[0] == 0:
         return True
     else:
         # horizontal
-        for row in range(rows):
-            for col in range(cols-(inarow-1)):
-                window = board[row, col:col+inarow]
+        for row in range(CFG_ROWS):
+            for col in range(CFG_COLS-(CFG_INAROW-1)):
+                window = board[row, col:col+CFG_INAROW]
                 if (window == player).all():
                     return True
         # vertical
-        for row in range(rows-(inarow-1)):
-            for col in range(cols):
-                window = board[row:row+inarow, col]
+        for row in range(CFG_ROWS-(CFG_INAROW-1)):
+            for col in range(CFG_COLS):
+                window = board[row:row+CFG_INAROW, col]
                 if (window == player).all():
                     return True
-        window = np.zeros(inarow, dtype=np.int8)
+                
+        window = np.zeros(CFG_INAROW, dtype=np.int8)
         # positive diagonal
-        for row in np.arange(rows-(inarow-1)):
-            for col in np.arange(cols-(inarow-1)):
-                for i in range(inarow):
+        for row in np.arange(CFG_ROWS-(CFG_INAROW-1)):
+            for col in np.arange(CFG_COLS-(CFG_INAROW-1)):
+                for i in range(CFG_INAROW):
                     window[i] = board[row+i, col+i]
                 if (window == player).all():
                     return True
         # negative diagonal
-        for row in np.arange(inarow-1, rows):
-            for col in np.arange(cols-(inarow-1)):
-                for i in range(inarow):
+        for row in np.arange(CFG_INAROW-1, CFG_ROWS):
+            for col in np.arange(CFG_COLS-(CFG_INAROW-1)):
+                for i in range(CFG_INAROW):
                     window[i] = board[row-i, col+i]
                 if (window == player).all():
                     return True
@@ -157,65 +165,67 @@ def check_game_over(board, rows, cols, inarow, player):
 
     
 @njit(fastmath=numba_fastmath, cache=numba_cache)
-def get_UCT(wins, visits, c, parent_visits):
+def get_UCT(wins, visits, parent_visits):
     """Get the UCT for the node"""
-    return wins / visits + c * np.sqrt(np.log(parent_visits/visits))
+    return wins / visits + CFG_C * np.sqrt(np.log(parent_visits/visits))
 
 
 @njit(fastmath=numba_fastmath, cache=numba_cache)
-def light_playout(curr_player, board, inarow, cols):
+def light_playout(curr_player, board):
     """Return the winner when selecting random actions from the supplied node"""
-    while get_winner(board, inarow) == -1:
+    board = board.copy()
+    while get_winner(board) == -1:
         selected_action = get_light_move(board)
         next_player = curr_player%2+1
-        board = drop_piece(board, selected_action, curr_player)
+        board = drop_piece_nocp(board, selected_action, curr_player)
         curr_player = next_player
-    return get_winner(board, inarow)        
+    return get_winner(board)        
 
 
 @njit(fastmath=numba_fastmath, cache=numba_cache)
-def heavy_playout(curr_player, board, inarow, cols):
+def heavy_playout(curr_player, board):
     """Return the winner when selecting random actions from the supplied node"""
-    while get_winner(board, inarow) == -1:
-        selected_action = get_heavy_move(board, cols, inarow, curr_player)
+    board = board.copy()
+    while get_winner(board) == -1:
+        selected_action = get_heavy_move(board, curr_player)
         next_player = curr_player%2+1
-        board = drop_piece(board, selected_action, curr_player)
+        board = drop_piece_nocp(board, selected_action, curr_player)
         curr_player = next_player
-    return get_winner(board, inarow)        
+    return get_winner(board)        
 
 
+spec = [
+    ('player', numba.int8),
+    ('board', numba.int8[:, :]),
+]
+@jitclass(spec)
 class Board:
     """A class implementing the connectx game"""
-    def __init__(self, board, cfg, player):
-        self.cols = cfg["cols"]
-        self.rows = cfg["rows"]
-        self.inarow = cfg["inarow"]
+    def __init__(self, board, player):
         self.player = player
-        # board in matrix form
-        self.board = board.reshape(self.rows, self.cols)
+        self.board = board
             
     def get_valid_moves(self):
         """Get valid moves on self.board"""
         return get_valid_moves(self.board)
-        
+                    
     def drop_piece(self, col, piece):
         """Get the board after dropping mark in col"""
-        return drop_piece(self.board, col, piece)
+        return drop_piece_cp(self.board, col, piece)
         
     def check_game_over(self):
         """Returns true if there is a winning configuration on the board of if there are no valid moves"""
-        return check_game_over(self.board, self.rows, self.cols, self.inarow, self.player)
+        return check_game_over(self.board, self.player)
     
-    
+
 class Node:
     """A class representing nodes in MCTS"""
-    def __init__(self, parent, board, cfg, player):
-        self.board = Board(board, cfg, player)
+    def __init__(self, parent_visits, board, player):
+        self.board = Board(board, player)
         self.visits = 0
         self.wins = np.zeros(3, dtype=np.int32)
         self.player = player
-        self.c = 2
-        self.parent = parent
+        self.parent_visits = parent_visits
         self.valid_actions = self.board.get_valid_moves()
         self.children = {}
         
@@ -228,31 +238,28 @@ class Node:
     
     def is_terminal(self):
         return self.board.check_game_over()
-                
+    
+    def expand(self):
+        for col in self.board.get_valid_moves():
+            self.children[valid_move] = Node(self.visits, self.board.drop_piece(col), self.player%2+1)
+            
     def get_UCT(self, player):
         """Get the UCT for the node"""
-        return get_UCT(self.wins[player], self.visits, self.c, self.parent.visits)
+        return get_UCT(self.wins[player], self.visits, self.parent_visits)
 
 
 class MCTS:
     """The MCTS search manager"""
-    def __init__(self, obs, cfg, playout_type, decision_time=0.1, board=None):
+    def __init__(self, obs, playout_type, decision_time=0.1, board=None):
         np.random.seed()
-        self.time_budget = cfg["timeout"]
+        self.time_budget = CFG_TIMEOUT
         self.decision_time = decision_time
         self.simulation_time = self.time_budget - self.decision_time
-        self.cfg = {
-            "cols": cfg["columns"],
-            "rows": cfg["rows"],
-            "inarow": cfg["inarow"],
-            "playout_type": playout_type
-        }
-        self.player = obs["mark"]
+        self.player = np.int8(obs["mark"])
         self.first_step = obs["step"]
         if board is None:
-            self.root = Node(None, np.array(obs["board"], dtype=np.int8), self.cfg, self.player)
-        else:
-            self.root = Node(None, np.array(board, dtype=np.int8), self.cfg, self.player)
+            board = np.array(obs["board"], dtype=np.int8).reshape((CFG_ROWS, CFG_COLS))
+        self.root = Node(0, board, self.player)
             
     def run_until_timeout(self, start=None, q=None):
         """Call run_round until time runs out"""
@@ -306,19 +313,15 @@ class MCTS:
             selected_action = random.choice(unexplored_actions)
             actions.append(selected_action)
             next_player = curr_player%2+1
-            node.children[selected_action] = Node(node, node.board.drop_piece(selected_action, curr_player).flatten(), self.cfg, next_player)
+            node.children[selected_action] = Node(node.visits, node.board.drop_piece(selected_action, curr_player), next_player)
             curr_player = curr_player%2+1
             return node.children[selected_action], actions
         return node, actions
     
     def playout(self, node, actions):
         """Return the winner when selecting random actions from the supplied node"""
-        if self.cfg["playout_type"] == "light":
-            return light_playout(self.player if len(actions) % 2 == 0 else self.player%2+1, node.board.board, node.board.inarow, node.board.cols)
-        elif self.cfg["playout_type"] == "heavy":
-            return heavy_playout(self.player if len(actions) % 2 == 0 else self.player%2+1, node.board.board, node.board.inarow, node.board.cols)
-        else:
-            raise ValueError("Invalid playout type")
+        return light_playout(self.player if len(actions) % 2 == 0 else self.player%2+1, node.board.board)
+#         return heavy_playout(self.player if len(actions) % 2 == 0 else self.player%2+1, node.board.board)
     
     def backpropagate(self, winner, actions):
         """Update all nodes along the action path"""
@@ -328,21 +331,15 @@ class MCTS:
         for action in actions:
             node = node.children[action]
             node.visits += 1
+            node.parent_visits += 1
             node.wins[winner] += 1
             
     def get_best_action(self):
-        """Select the best action as the one that has been simulated the most"""
-        try:
-            actions, children = map(list, zip(*self.root.children.items()))
-        except ValueError:
-            # no children have been expanded
-            actions = self.root.valid_actions
-            children = None
-            
+        """Select the best action as the one that has been simulated the most"""            
         # check for win, block opponent win
-        winners = np.zeros(self.cfg["cols"], dtype=np.int8)
+        winners = np.zeros(CFG_COLS, dtype=np.int8)
         for col in self.root.valid_actions:
-            winner = get_move_winner(self.root.board.board, self.cfg["inarow"], self.player, col)
+            winner = get_move_winner(self.root.board.board, self.player, col)
             if winner == self.player:
                 return col
             winners[col] = 0 if winner == -1 else winner
@@ -350,14 +347,14 @@ class MCTS:
         if opponent_winning_moves.shape[0] > 0:
             return opponent_winning_moves[0]
 
-        if children != None:
-            visits = np.zeros(self.cfg["cols"], dtype=np.int32)
+        if self.root.children != {}:
+            visits = np.zeros(CFG_COLS, dtype=np.int32)
             for action, child in self.root.children.items():
                 visits[action] = child.visits
             return visits
         else:
             return random.choice(actions)
-
+        
 
 mp_or_sp = "mp"
 playout_type = "light"
@@ -366,28 +363,30 @@ playout_type = "light"
 def sp_mcts_agent(obs, cfg):
     start = default_timer()
     global my_mcts
+    # delete mcts for repeated simulation
     if (obs["step"]==0) or (obs["step"]==1):
         # delete for repeated simulation
         if "my_mcts" in globals():
             np.random.seed()
             del(my_mcts)
-        my_mcts = MCTS(obs, cfg, playout_type)
-        start += 15
+        # init
+        my_mcts = MCTS(obs, playout_type)
+        start += 10
     else:
         # need to update board based on opponent's tree
         board_diff = my_mcts.root.board.board - np.array(obs["board"]).reshape(cfg["rows"], cfg["columns"])
         opponent_action = board_diff.nonzero()[1][0]
         # if agent is slow, this branch may not have been explored and needs to be manually created
         if opponent_action not in my_mcts.root.children:
-            my_mcts.root.children[opponent_action] = Node(my_mcts.root, my_mcts.root.board.drop_piece(opponent_action, my_mcts.player%2+1).flatten(), my_mcts.cfg, my_mcts.player)
+            my_mcts.root.children[opponent_action] = Node(my_mcts.root.visits, my_mcts.root.board.drop_piece(opponent_action, my_mcts.player%2+1), my_mcts.player)
         my_mcts.root = my_mcts.root.children[opponent_action]
-        my_mcts.root.parent = None
+        my_mcts.root.parent_visits = 0
     my_mcts.run_until_timeout(start)
     action = my_mcts.get_best_action()
     if isinstance(action, np.ndarray):
         action = action.argmax()
     my_mcts.root = my_mcts.root.children[action]
-    my_mcts.root.parent = None
+    my_mcts.root.parent_visits = 0
     return int(action)
 
 
@@ -395,6 +394,7 @@ def mp_mcts_agent(obs, cfg):
     start = default_timer()
     global my_mctss
     global my_q
+    # delete mcts for repeated simulation
     if (obs["step"]==0) or (obs["step"]==1):
         # delete mcts for repeated simulation
         if "my_mctss" in globals():
@@ -402,7 +402,8 @@ def mp_mcts_agent(obs, cfg):
             del(my_mctss)
             my_q.close()
             del(my_q)
-        my_mctss = [MCTS(obs, cfg, playout_type, decision_time=-2.0) for i in range(psutil.cpu_count(logical=False))]
+        # init
+        my_mctss = [MCTS(obs, playout_type, decision_time=-2.0) for i in range(psutil.cpu_count(logical=False))]
         my_q = mp.Queue()
         start += 10
     else:
@@ -411,19 +412,19 @@ def mp_mcts_agent(obs, cfg):
         opponent_action = board_diff.nonzero()[1][0]
         # if agent is slow, this branch may not have been explored and needs to be manually created
         if opponent_action not in my_mctss[0].root.children:
-            my_mctss[0].root.children[opponent_action] = Node(my_mctss[0].root, my_mctss[0].root.board.drop_piece(opponent_action, my_mctss[0].player%2+1).flatten(), my_mctss[0].cfg, my_mctss[0].player)
+            my_mctss[0].root.children[opponent_action] = Node(my_mctss[0].root.visits, my_mctss[0].root.board.drop_piece(opponent_action, my_mctss[0].player%2+1), my_mctss[0].player)
         my_mctss[0].root = my_mctss[0].root.children[opponent_action]
-        my_mctss[0].root.parent = None
+        my_mctss[0].root.parent_visits = 0
         # reinit to avoid long put/get
         for i in range(1, len(my_mctss)):
-            my_mctss[i] = MCTS(obs, cfg, playout_type, decision_time=-2.0, board=my_mctss[0].root.board.board)
+            my_mctss[i] = MCTS(obs, playout_type, decision_time=-1.9, board=my_mctss[0].root.board.board)
     my_procs = [mp.Process(target=my_mctss[i+1].run_until_timeout, args=[start, my_q]) for i in range(len(my_mctss) - 1)]
     for my_proc in my_procs:
         my_proc.start()
-    # q WILL have len(my_mctss) - 1 objects, but may appear empty due to async puts
+    # q WILL have len(my_mctss) - 1 objects, but may appear empty at first glance due to async puts
     # joining before getting results in a deadlock
     # first, wait mcts.simulation_time
-    # then, attempt to get len(my_mctss) objs from the q, pausing if it is empty
+    # then, attempt to get len(my_mctss) objs from the q, waiting if it is empty
     n_received = 0
     my_mctss[0].run_until_timeout(start)
     proc_actions = []
@@ -454,7 +455,7 @@ def mp_mcts_agent(obs, cfg):
             action = array_actions.argmax()
     action = int(action)
     my_mctss[0].root = my_mctss[0].root.children[action]
-    my_mctss[0].root.parent = None
+    my_mctss[0].root.parent_visits = 0
     return action
 
 
@@ -462,4 +463,3 @@ if mp_or_sp == "sp":
     mcts_agent = sp_mcts_agent
 elif mp_or_sp == "mp":
     mcts_agent = mp_mcts_agent
-    
