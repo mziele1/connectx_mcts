@@ -2,6 +2,16 @@
 A Monte Carlo tree search agent for Kaggle's Connect X competition.
 
 
+## Usage
+See run_game.ipynb
+
+
+## Requirements
+* numpy
+* numba
+* kaggle-environments
+
+
 ## Features
 * Numba acceleration
 * Parallelization via multiprocessing
