@@ -361,7 +361,9 @@ class MCTS:
             return random.choice(actions)
         
 
+# switch mcts_agent between the single process (sp) and multi process (mp) versions
 mp_or_sp = "mp"
+# use light or heavy playouts
 playout_type = "light"
 
 
@@ -374,8 +376,8 @@ def sp_mcts_agent(obs, cfg):
         if "my_mcts" in globals():
             np.random.seed()
             del(my_mcts)
-        # init
         my_mcts = MCTS(obs, playout_type)
+        # extra time on the first turn for JIT compilation
         start += 10
     else:
         # need to update board based on opponent's tree
@@ -407,9 +409,10 @@ def mp_mcts_agent(obs, cfg):
             del(my_mctss)
             my_q.close()
             del(my_q)
-        # init
+        # add extra time to each turn by updating decision_time
         my_mctss = [MCTS(obs, playout_type, decision_time=-2.0) for i in range(psutil.cpu_count(logical=False))]
         my_q = mp.Queue()
+        # extra time on the first turn for JIT compilation
         start += 10
     else:
         # need to update board based on opponent's tree
