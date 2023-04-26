@@ -376,9 +376,10 @@ def sp_mcts_agent(obs, cfg):
         if "my_mcts" in globals():
             np.random.seed()
             del(my_mcts)
-        my_mcts = MCTS(obs, playout_type)
+        # add extra time to each turn by updating decision_time
+        my_mcts = MCTS(obs, playout_type, decision_time=-1.5)
         # extra time on the first turn for JIT compilation
-        start += 10
+        start += 15
     else:
         # need to update board based on opponent's tree
         board_diff = my_mcts.root.board.board - np.array(obs["board"]).reshape(cfg["rows"], cfg["columns"])
@@ -410,10 +411,10 @@ def mp_mcts_agent(obs, cfg):
             my_q.close()
             del(my_q)
         # add extra time to each turn by updating decision_time
-        my_mctss = [MCTS(obs, playout_type, decision_time=-2.0) for i in range(psutil.cpu_count(logical=False))]
+        my_mctss = [MCTS(obs, playout_type, decision_time=-1.5) for i in range(psutil.cpu_count(logical=False))]
         my_q = mp.Queue()
         # extra time on the first turn for JIT compilation
-        start += 10
+        start += 15
     else:
         # need to update board based on opponent's tree
         board_diff = my_mctss[0].root.board.board - np.array(obs["board"]).reshape(cfg["rows"], cfg["columns"])
@@ -425,7 +426,7 @@ def mp_mcts_agent(obs, cfg):
         my_mctss[0].root.parent_visits = 0
         # reinit to avoid long put/get
         for i in range(1, len(my_mctss)):
-            my_mctss[i] = MCTS(obs, playout_type, decision_time=-1.9, board=my_mctss[0].root.board.board)
+            my_mctss[i] = MCTS(obs, playout_type, decision_time=-1.5, board=my_mctss[0].root.board.board)
     my_procs = [mp.Process(target=my_mctss[i+1].run_until_timeout, args=[start, my_q]) for i in range(len(my_mctss) - 1)]
     for my_proc in my_procs:
         my_proc.start()
