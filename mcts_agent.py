@@ -116,7 +116,7 @@ def get_heavy_move(board, player):
     valid_moves = get_valid_moves(board)
     winners = np.zeros(CFG_COLS, dtype=np.int8)
     for col in valid_moves:
-        winner = get_move_winner(board, CFG_INAROW, player, col)
+        winner = get_move_winner(board, player, col)
         if winner == player:
             return col
         winners[col] = winner
@@ -252,6 +252,7 @@ class MCTS:
     """The MCTS search manager"""
     def __init__(self, obs, playout_type, decision_time=0.1, board=None):
         np.random.seed()
+        self.playout_type = playout_type
         self.time_budget = CFG_TIMEOUT
         self.decision_time = decision_time
         self.simulation_time = self.time_budget - self.decision_time
@@ -319,9 +320,13 @@ class MCTS:
         return node, actions
     
     def playout(self, node, actions):
-        """Return the winner when selecting random actions from the supplied node"""
-        return light_playout(self.player if len(actions) % 2 == 0 else self.player%2+1, node.board.board)
-#         return heavy_playout(self.player if len(actions) % 2 == 0 else self.player%2+1, node.board.board)
+        """Return the final game state using the selected playout type"""
+        if self.playout_type == "light":
+            return light_playout(self.player if len(actions) % 2 == 0 else self.player%2+1, node.board.board)
+        elif self.playout_type == "heavy":
+            return heavy_playout(self.player if len(actions) % 2 == 0 else self.player%2+1, node.board.board)
+        else:
+            raise ValueError("Invalid playout_type")
     
     def backpropagate(self, winner, actions):
         """Update all nodes along the action path"""
