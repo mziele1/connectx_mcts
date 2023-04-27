@@ -3,7 +3,7 @@ A Monte Carlo tree search agent for Kaggle's Connect X competition.
 
 
 ## Usage
-See run_game.ipynb
+See examples.ipynb
 
 
 ## Requirements
